@@ -1,0 +1,23 @@
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #321c40;
+  background: #fffaf9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --ink: #32183f;
+  --ink-deep: #20102b;
+  --muted: #79717d;
+  --line: rgba(62, 35, 76, .13);
+  --white: #fff;
+  --coral: #ff675c;
+  --orange: #ffa044;
+  --pink: #e95192;
+  --violet: #6435bf;
+  --gradient: linear-gradient(115deg, #ff9c6a 0%, #f75f84 52%, #7438bd 100%);
+  --gradient-deep: linear-gradient(140deg, #31123e, #652e83 55%, #f16b87);
+  --radius-sm: 12px;
+  --radius-md: 20px;
+  --radius-lg: 28px;
+  --shadow: 0 18px 48px rgba(53, 22, 66, .13);
+  --container: 1240px;
+}
