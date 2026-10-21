@@ -1,5 +1,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowUpRight,
   MapPin,
@@ -7,6 +8,8 @@ import {
   Sparkles,
   Star,
 } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { isSupabaseConfigured, supabase } from "../lib/supabase";
 
 import CategoryNav from "../components/CategoryNav";
 import {
@@ -176,6 +179,8 @@ function EmptyTier({ title }) {
 }
 
 export default function Home() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [ads, setAds] = useState([]);
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
@@ -289,6 +294,32 @@ export default function Home() {
   const t1 = tierAds("T1");
   const t2 = tierAds("T2");
   const t3 = tierAds("T3");
+
+  /**
+   * Auth-aware "Advertise with AdSphere" CTA.
+   *
+   * The context session can be briefly stale while Supabase restores it from
+   * storage, so the click handler re-checks the live session before deciding
+   * where to send the user. Falls back to the context user when Supabase is
+   * not configured (demo mode), where `user` is always null anyway.
+   */
+  const handleAdvertiseClick = async () => {
+    let currentUser = user;
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+
+        if (!error && data?.session?.user) {
+          currentUser = data.session.user;
+        }
+      } catch (err) {
+        console.error("[AdSphere] Could not verify session:", err);
+      }
+    }
+
+    navigate(currentUser ? "/dashboard" : "/login");
+  };
 
   return (
     <main>
@@ -484,10 +515,13 @@ export default function Home() {
               favorite place.
             </p>
           </div>
-
-          <a className="button button-dark" href="/register">
+          <button
+            type="button"
+            className="button button-dark"
+            onClick={handleAdvertiseClick}
+          >
             Advertise with AdSphere <ArrowUpRight size={18} />
-          </a>
+          </button>
         </section>
       </div>
 

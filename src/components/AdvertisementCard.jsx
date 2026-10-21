@@ -1,6 +1,36 @@
 
-import { ArrowUpRight, MapPin, ImageOff } from "lucide-react";
+import { ArrowUpRight, MapPin, ImageOff, Star } from "lucide-react";
 import { useEffect, useState } from "react";
+
+/**
+ * Extract a display-ready rating and review count from an advertisement.
+ *
+ * Handles every shape the data can arrive in:
+ * - rating: 4.8 | "4.8" | null
+ * - review_count: 12
+ * - reviews: ["Great coffee", ...] | "Great coffee · Lovely staff" | ""
+ */
+function getRatingInfo(ad) {
+  const ratingValue = Number(ad?.rating);
+  const rating =
+    Number.isFinite(ratingValue) && ratingValue > 0 ? ratingValue : null;
+
+  let count = Number(ad?.review_count);
+
+  if (!Number.isFinite(count) || count < 0) {
+    const reviews = ad?.reviews;
+
+    if (Array.isArray(reviews)) {
+      count = reviews.filter(Boolean).length;
+    } else if (typeof reviews === "string" && reviews.trim()) {
+      count = 1;
+    } else {
+      count = 0;
+    }
+  }
+
+  return { rating, count };
+}
 
 function getImageList(ad) {
   if (String(ad?.tier ?? "").trim().toUpperCase() === "T3") {
@@ -94,6 +124,8 @@ function AdvertisementImage({
 }
 
 export function FeaturedCard({ ad, index, onDetails }) {
+  const { rating, count } = getRatingInfo(ad);
+
   return (
     <article className="featured-card">
       <div className="featured-image-wrap">
@@ -105,6 +137,14 @@ export function FeaturedCard({ ad, index, onDetails }) {
         />
 
         <div className="image-shade" />
+
+        {rating !== null && (
+          <span className="featured-rating" title={`${rating} out of 5`}>
+            <Star size={14} fill="currentColor" />
+            {rating.toFixed(1)}
+            {count > 0 && <small>({count})</small>}
+          </span>
+        )}
 
         <span className="featured-badge">
           {ad.badge || "FEATURED PARTNER"} ·{" "}
@@ -131,6 +171,18 @@ export function FeaturedCard({ ad, index, onDetails }) {
 
           <h4>{ad.name}</h4>
           <p>{ad.description || "Discover something great nearby."}</p>
+
+          {rating !== null && (
+            <span className="card-rating">
+              <Star size={15} fill="currentColor" />
+              <strong>{rating.toFixed(1)}</strong>
+              {count > 0 && (
+                <span className="rating-count">
+                  {count} {count === 1 ? "review" : "reviews"}
+                </span>
+              )}
+            </span>
+          )}
         </div>
 
         <button
