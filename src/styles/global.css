@@ -339,3 +339,10 @@
 @media(min-width:1200px){.featured-image-wrap{height:250px}}
 @media(max-width:950px){.featured-grid{grid-template-columns:1fr}.featured-image-wrap{height:230px}}
 @media(max-width:700px){.featured-grid{grid-template-columns:1fr}.featured-image-wrap{height:230px}}
+
+/* Location filter on the advertisements listing page */
+.location-filter-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.location-filter-label{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#7a6c82}
+.location-filter{background:#fff;border-color:#eee4f1;box-shadow:var(--shadow)}
+.location-filter .category-button{font-weight:600}
+@media(max-width:700px){.location-filter-row{align-items:flex-start;flex-direction:column;gap:10px}.location-filter{width:100%}}

@@ -3,6 +3,16 @@ import { supabase } from "../lib/supabase";
 
 export const DEFAULT_DURATION_DAYS = 30;
 
+// Cities accepted by the advRec.location CHECK constraint. The
+// plan form's location dropdown must offer exactly these values.
+export const SUPPORTED_CITIES = [
+  "Noida",
+  "Mumbai",
+  "Delhi",
+  "Bangalore",
+  "Pune",
+];
+
 const MAX_AD_IMAGE_SIZE = 5 * 1024 * 1024;
 const MAX_AD_IMAGES = 5;
 const ALLOWED_AD_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -143,7 +153,7 @@ export async function submitPlanAdvertisement({ tier, form, userId }) {
       .map((item) => item.trim())
       .filter(Boolean);
 
-const locations = splitLines(form.locations);
+const location = String(form.location ?? "").trim();
 
 const imageFiles = tier === "T3"
   ? []
@@ -172,8 +182,10 @@ const imageUrls = tier === "T3"
     throw new Error("Headline is required.");
   }
 
-  if (!locations.length) {
-    throw new Error("Enter at least one location.");
+  if (!SUPPORTED_CITIES.includes(location)) {
+    throw new Error(
+      "Choose one of the supported cities: Noida, Mumbai, Delhi, Bangalore or Pune."
+    );
   }
 
   if (!form.address.trim()) {
@@ -217,7 +229,7 @@ const imageUrls = tier === "T3"
     headline: form.headline.trim(),
     category: form.category,
     image_urls: tier === "T3" ? [] : imageUrls,
-    locations,
+    location,
     address: form.address.trim(),
     website,
     rating:

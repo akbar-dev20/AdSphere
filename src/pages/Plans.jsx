@@ -14,6 +14,7 @@ import {
   DEFAULT_DURATION_DAYS,
   getPlanPrices,
   PLAN_CONFIG,
+  SUPPORTED_CITIES,
   submitPlanAdvertisement,
 } from "../services/subscriptions";
 
@@ -22,7 +23,7 @@ const emptyForm = {
   headline: "",
   category: "Eat",
   imageFiles: [],
-  locations: "",
+  location: "Noida",
   address: "",
   website: "",
   rating: "",
@@ -122,7 +123,7 @@ function AdvertisementForm({ tier, price, onClose, onSubmitted }) {
       if (
         !form.companyName.trim() ||
         !form.headline.trim() ||
-        !form.locations.trim() ||
+        !form.location.trim() ||
         !form.address.trim() ||
         !form.paymentReference.trim()
       ) {
@@ -307,17 +308,21 @@ function AdvertisementForm({ tier, price, onClose, onSubmitted }) {
 
             <div className="ad-form-full">
               <Field
-                label="Locations"
+                label="Location"
                 required
-                hint="Enter one city, neighborhood, or locality per line."
+                hint="Choose the city where your business is located."
               >
-                <textarea
-                  value={form.locations}
-                  onChange={(e) => update("locations", e.target.value)}
+                <select
+                  value={form.location}
+                  onChange={(e) => update("location", e.target.value)}
                   required
-                  rows={2}
-                  placeholder={"Kanpur\nCivil Lines"}
-                />
+                >
+                  {SUPPORTED_CITIES.map((city) => (
+                    <option key={city} value={city}>
+                      {city}
+                    </option>
+                  ))}
+                </select>
               </Field>
             </div>
 

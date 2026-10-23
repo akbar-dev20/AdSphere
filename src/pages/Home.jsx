@@ -12,6 +12,7 @@ import { useAuth } from "../context/AuthContext";
 import { isSupabaseConfigured, supabase } from "../lib/supabase";
 
 import CategoryNav from "../components/CategoryNav";
+import LocationFilter from "../components/LocationFilter";
 import {
   FeaturedCard,
   LocalFavoriteCard,
@@ -183,6 +184,7 @@ export default function Home() {
   const { user } = useAuth();
   const [ads, setAds] = useState([]);
   const [category, setCategory] = useState("All");
+  const [locationFilter, setLocationFilter] = useState("All");
   const [query, setQuery] = useState("");
   const [selectedAd, setSelectedAd] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -194,7 +196,9 @@ export default function Home() {
     setError("");
 
     try {
-      const result = await getPublicAdvertisements();
+      const result = await getPublicAdvertisements({
+        location: locationFilter,
+      });
 
       if (result?.error) {
         setAds([]);
@@ -249,7 +253,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [locationFilter]);
 
   useEffect(() => {
     loadAds();
@@ -378,6 +382,18 @@ export default function Home() {
       </section>
 
       <div className="container discovery-wrap" id="discover-results">
+        <div className="location-filter-row">
+          <span className="location-filter-label">
+            <MapPin size={15} />
+            Filter by location
+          </span>
+
+          <LocationFilter
+            value={locationFilter}
+            onChange={setLocationFilter}
+          />
+        </div>
+
         <div className="category-row">
           <div>
             <span className="section-kicker">FIND YOUR NEXT FAVORITE</span>

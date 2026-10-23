@@ -53,7 +53,25 @@ function toDisplayText(value) {
     );
   }
 
-  return String(value);
+  // Legacy rows sometimes store arrays as JSON-encoded strings
+  // (e.g. '["Noida"]'). Render them like real arrays, matching how the
+  // location filter (rowMatchesLocation) treats them.
+  const stringValue = String(value);
+  const trimmed = stringValue.trim();
+
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+
+      if (Array.isArray(parsed)) {
+        return toDisplayText(parsed);
+      }
+    } catch {
+      // Not valid JSON — fall through and show the raw string.
+    }
+  }
+
+  return stringValue;
 }
 
 
@@ -212,10 +230,68 @@ const images = tier === "T3" ? [] : normalizeImages(row.images);
   };
 }
 
-export async function getPublicAdvertisements() {
+/**
+ * Normalize the requested location filter.
+ *
+ * "All" (or empty) means "no location filter" — every advertisement is
+ * returned. Anything else is treated as a single city name.
+ */
+function normalizeLocationFilter(location) {
+  const value = typeof location === "string" ? location.trim() : "";
+
+  if (!value || value.toLowerCase() === "all") {
+    return "";
+  }
+
+  return value;
+}
+
+/**
+ * Client-side location match, used when the API cannot filter server-side
+ * (for example while older rows still store location as an array).
+ *
+ * Accepts plain text ("Noida"), JS arrays (["Noida"]) and JSON-encoded
+ * arrays ('["Noida"]'). Matching is case-insensitive and substring-based
+ * so legacy values such as "Noida sector 18" still surface under "Noida".
+ */
+function rowMatchesLocation(row, city) {
+  if (!city) return true;
+
+  const needle = city.toLowerCase();
+  const raw = row?.location;
+  let values = [];
+
+  if (Array.isArray(raw)) {
+    values = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+
+        values = Array.isArray(parsed) ? parsed : [trimmed];
+      } catch {
+        values = [trimmed];
+      }
+    } else {
+      values = [trimmed];
+    }
+  }
+
+  return values.some((value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .includes(needle)
+  );
+}
+
+export async function getPublicAdvertisements(options = {}) {
+  const locationFilter = normalizeLocationFilter(options?.location);
+
   if (!isSupabaseConfigured || !supabase) {
     return {
-      data: demoAds,
+      data: demoAds.filter((ad) => rowMatchesLocation(ad, locationFilter)),
       error: new Error(
         "Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file."
       ),
@@ -224,12 +300,46 @@ export async function getPublicAdvertisements() {
   }
 
   try {
-    const { data, error } = await supabase
+    let request = supabase
       .from(LIVE_TABLE)
       .select("*")
       .order("created_at", { ascending: false });
 
+    // Server-side filtering: advRec.location is a plain text column holding
+    // one of the supported city names.
+    if (locationFilter) {
+      request = request.eq("location", locationFilter);
+    }
+
+    const { data, error } = await request;
+
     if (error) {
+      // The filtered query was rejected (e.g. the column is still an array
+      // type in the current database). Retry once without the filter and
+      // narrow the rows client-side so the filter keeps working.
+      if (locationFilter) {
+        const fallback = await supabase
+          .from(LIVE_TABLE)
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (fallback.error) {
+          return {
+            data: [],
+            error: fallback.error,
+            source: "supabase",
+          };
+        }
+
+        return {
+          data: (fallback.data ?? [])
+            .filter((row) => rowMatchesLocation(row, locationFilter))
+            .map(normalizeAdvertisement),
+          error: null,
+          source: "supabase",
+        };
+      }
+
       return {
         data: [],
         error,
