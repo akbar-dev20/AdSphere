@@ -1,0 +1,298 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AdSphere deploy pipeline, derived from repo analysis:
+#   • Vite 6 + React 18 SPA (plain JS/JSX) — build is `npm run build` → dist/
+#   • npm with package-lock.json (lockfileVersion 3) — no .nvmrc / engines pin
+#   • Supabase CLI project: supabase/config.toml (project_id "adsphere-frontend")
+#     with migrations in supabase/migrations/ and NO supabase/functions/ yet
+#   • Frontend is published to gh-pages of the SEPARATE repo
+#     akbar-dev20/AdSphere-deploy (never pushed back to this source repo)
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  – Supabase CLI access token (Management API)
+#   SUPABASE_PROJECT_ID    – Supabase project ref (kept in a secret on purpose,
+#                            never hardcoded, never echoed)
+#   DESTINATION_REPO_TOKEN – PAT with contents:write on akbar-dev20/AdSphere-deploy
+#
+# Secret values are only ever handed to the tools that need them via env vars;
+# no step prints them, and the workflow's own GITHUB_TOKEN stays contents:read.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Serialize deploys: runs in this group never overlap. cancel-in-progress: false
+# means an in-flight deploy finishes and newer runs queue behind it (a cancelled
+# mid-push deploy would be worse than a short wait).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege: this workflow only reads the source repo. The gh-pages push
+# authenticates with DESTINATION_REPO_TOKEN and the backend deploy with the
+# Supabase access token — neither requires GITHUB_TOKEN write access.
+permissions:
+  contents: read
+
+env:
+  # No Node version is pinned in the repo (no .nvmrc, no engines field). Node 22
+  # LTS satisfies Vite 6's range (^18 || ^20 || >=22). Bump here to change.
+  NODE_VERSION: "22"
+
+jobs:
+  # ── A ────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node with npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # Lockfile-driven install: npm ci fails if package.json and
+      # package-lock.json disagree, and never rewrites the lockfile.
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      # package.json currently defines neither script; the explicit existence
+      # check keeps this step correct the day one is added. (A `test` script
+      # exists — `vitest run` — add it here if CI should gate on tests too.)
+      - name: Lint / typecheck (only if the scripts exist)
+        run: |
+          for s in lint typecheck; do
+            if node -e "process.exit(String(process.argv[1]) in (require('./package.json').scripts || {}) ? 0 : 1)" "$s"; then
+              echo "Running npm run $s ..."
+              npm run "$s"
+            else
+              echo "No '$s' script in package.json — skipping."
+            fi
+          done
+
+      # The project's real build command (package.json → vite build → dist/).
+      # Any nonzero exit fails the job and blocks the downstream deploy jobs.
+      - name: Build (vite build → dist/)
+        run: npm run build
+
+      # Only the build output travels to the publish job; nothing else is
+      # shipped, and a build that produced no dist/ fails here.
+      - name: Upload dist/ artifact for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── B ────────────────────────────────────────────────────────────────────────
+  supabase:
+    name: Deploy Supabase Backend
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail fast if secrets are missing. Only secret *names* are printed —
+      # values are never echoed anywhere in this workflow.
+      - name: Guard — required secrets are present
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          fail=0
+          for v in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID; do
+            if [ -z "$(printenv "$v")" ]; then
+              echo "::error title=Missing secret::$v is not set — add it under Settings → Secrets and variables → Actions."
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          # Pin a concrete version (e.g. "v2.30.4") once the CLI version used
+          # locally (devDependency "supabase") is settled, for reproducibility.
+          version: latest
+
+      # ── Review gate ─────────────────────────────────────────────────────────
+      # Heuristic scan of supabase/migrations/*.sql for destructive SQL. Findings
+      # go to ::warning annotations + the job summary; by default the run
+      # CONTINUES with a loud review note. Set FAIL_ON_RISKY_MIGRATIONS to
+      # "true" to make this a hard gate that stops the deploy before db push.
+      - name: Scan migrations for risky / destructive SQL (review gate)
+        id: risky_scan
+        env:
+          FAIL_ON_RISKY_MIGRATIONS: "false"
+        run: |
+          shopt -s nullglob
+          files=(supabase/migrations/*.sql)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No files in supabase/migrations/ — nothing to scan."
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          patterns=(
+            'DROP[[:space:]]+(TABLE|SCHEMA|DATABASE)'
+            'DROP[[:space:]]+COLUMN'
+            'DROP[[:space:]]+(CONSTRAINT|INDEX|POLICY|TRIGGER|FUNCTION|VIEW|MATERIALIZED[[:space:]]+VIEW|TYPE|DOMAIN|ROLE)'
+            'TRUNCATE'
+            'DELETE[[:space:]]+FROM'
+            'RENAME[[:space:]]+(TO|COLUMN)'
+            'ALTER[[:space:]]+COLUMN[^;]*TYPE'
+            'SET[[:space:]]+DATA[[:space:]]+TYPE'
+            'ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL'
+          )
+          combined="$(IFS='|'; echo "${patterns[*]}")"
+
+          file_count=0
+          summary="$(mktemp)"
+          {
+            echo "## 🕵️ Risky / destructive SQL scan (review gate)"
+            echo
+            echo "Heuristic scan of \`supabase/migrations/*.sql\` — these statements can lose data or take long locks. A human should review them before they land in the linked project."
+            echo
+          } > "$summary"
+
+          for f in "${files[@]}"; do
+            hits="$(grep -Ein "$combined" "$f" || true)"
+
+            # Statement-level heuristic: UPDATE spanning lines without WHERE.
+            flat="$(tr '\r\n' '  ' < "$f")"
+            IFS=';' read -ra stmts <<< "$flat"
+            for s in "${stmts[@]}"; do
+              trimmed="$(printf '%s' "$s" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if printf '%s' "$trimmed" | grep -Eiq '^UPDATE[[:space:]]' && \
+                 ! printf '%s' "$trimmed" | grep -Eiq '[[:space:]]WHERE[[:space:]]'; then
+                hits+="0: UPDATE without WHERE (heuristic): ${trimmed:0:140}"$'\n'
+              fi
+            done
+
+            if [ -n "$hits" ]; then
+              file_count=$((file_count + 1))
+              {
+                echo "### \`$f\`"
+                echo '```sql'
+                printf '%s\n' "$hits"
+                echo '```'
+              } >> "$summary"
+              while IFS= read -r h; do
+                [ -n "$h" ] || continue
+                echo "::warning title=Risky migration SQL::$f → $h"
+              done <<< "$hits"
+            fi
+          done
+
+          if [ "$file_count" -eq 0 ]; then
+            echo "✅ No risky/destructive patterns detected." >> "$summary"
+          else
+            {
+              echo
+              echo "> **Review gate:** $file_count migration file(s) contain potentially destructive SQL (see above)."
+              echo "> They will be applied to the linked project by \`supabase db push\` in the next step —"
+              echo "> confirm every hit is intentional. To make this gate blocking instead of advisory,"
+              echo "> set env FAIL_ON_RISKY_MIGRATIONS=\"true\" in this step."
+            } >> "$summary"
+          fi
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$summary"
+          echo "count=$file_count" >> "$GITHUB_OUTPUT"
+
+          if [ "$FAIL_ON_RISKY_MIGRATIONS" = "true" ] && [ "$file_count" -gt 0 ]; then
+            echo "::error title=Review gate::Risky SQL found and FAIL_ON_RISKY_MIGRATIONS=true — stopping before db push."
+            exit 1
+          fi
+
+      - name: Link Supabase project (ref comes from the secret — never hardcoded)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      # Applies every migration in supabase/migrations/ that is missing from the
+      # remote migration history. --include-all avoids the interactive repair
+      # prompt, which would hang a CI runner. NOTE: if the remote schema was
+      # created ad-hoc (e.g. via the dashboard SQL editor) rather than through
+      # migration history, the first push may fail with "already exists" —
+      # reconcile once with `supabase migration repair <version>`.
+      - name: Push database migrations (supabase/migrations)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: supabase db push --include-all
+
+      # Deploys every edge function found in the repo. The repo currently has
+      # NO supabase/functions/ directory, so this exits cleanly; if functions
+      # are added later each subdirectory of supabase/functions/ is deployed.
+      # Shared-code dirs (leading "_" or ".") are skipped.
+      - name: Deploy edge functions found in the repo (none today → clean skip)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          if [ ! -d supabase/functions ]; then
+            echo "No supabase/functions/ directory in the repo — nothing to deploy (config.toml enables the edge runtime, but no functions exist yet)."
+            exit 0
+          fi
+          shopt -s nullglob
+          fns=()
+          for d in supabase/functions/*/; do
+            name="$(basename "$d")"
+            case "$name" in _*|.*) continue ;; esac
+            fns+=("$name")
+          done
+          if [ ${#fns[@]} -eq 0 ]; then
+            echo "supabase/functions/ contains no function directories — nothing to deploy."
+            exit 0
+          fi
+          for name in "${fns[@]}"; do
+            echo "Deploying edge function: $name"
+            supabase functions deploy "$name" --project-ref "$SUPABASE_PROJECT_ID"
+          done
+
+  # ── C ────────────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish Frontend
+    runs-on: ubuntu-latest
+    needs: [build, supabase]
+    steps:
+      - name: Guard — DESTINATION_REPO_TOKEN is present (value never printed)
+        env:
+          DESTINATION_REPO_TOKEN: ${{ secrets.DESTINATION_REPO_TOKEN }}
+        run: |
+          if [ -z "$(printenv DESTINATION_REPO_TOKEN)" ]; then
+            echo "::error title=Missing secret::DESTINATION_REPO_TOKEN is not set — add a PAT with contents:write on akbar-dev20/AdSphere-deploy."
+            exit 1
+          fi
+
+      - name: Download dist/ artifact built by job A
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Publishes ONLY ./dist to the gh-pages branch of the separate deploy
+      # repo. force_orphan: true rewrites gh-pages as a single orphan commit
+      # containing exactly the build output — a clean Pages root with no stale
+      # assets. keep_files: false is explicit. Nothing outside ./dist is
+      # published; source code, .env* and everything else in this repo are
+      # never touched (this workflow only ever READS the source repo), and
+      # .nojekyll is added automatically by the action.
+      - name: Publish dist/ → gh-pages of akbar-dev20/AdSphere-deploy
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.DESTINATION_REPO_TOKEN }}
+          external_repository: akbar-dev20/AdSphere-deploy
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          force_orphan: true
+          keep_files: false
+          commit_message: "Deploy frontend from AdSphere@${{ github.sha }}"
