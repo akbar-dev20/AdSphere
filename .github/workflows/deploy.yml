@@ -278,7 +278,11 @@ jobs:
   publish:
     name: Publish Frontend
     runs-on: ubuntu-latest
-    needs: [build, supabase]
+    # The Supabase steps (link, db push, edge functions) run inside the `build`
+    # job — there is no separate `supabase` job. Referencing a non-existent job
+    # here makes GitHub reject the whole workflow at parse time, which is why
+    # no deploy ever ran and the live site kept serving a stale build.
+    needs: [build]
     steps:
       - name: Guard — DESTINATION_REPO_TOKEN is present (value never printed)
         env:
