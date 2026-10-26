@@ -104,6 +104,18 @@ jobs:
       - name: Build (vite build → dist/)
         run: npm run build
 
+      # SPA deep-link fallback for GitHub Pages. Pages has no rewrite rules, so a
+      # direct visit / refresh of a client-side route (e.g. /advertisements) would
+      # otherwise return GitHub's "There isn't a GitHub Pages site here" 404.
+      # Serving a copy of index.html as 404.html fixes this: the bundle loads via
+      # its absolute /AdSphere-deploy/assets/... paths and BrowserRouter matches
+      # the route from window.location.pathname. Copying (not committing a static
+      # file) keeps it in sync with the hashed asset names of every build.
+      - name: Create SPA 404 fallback (copy dist/index.html → dist/404.html)
+        run: |
+          cp dist/index.html dist/404.html
+          echo "dist/404.html created ($(wc -c < dist/404.html) bytes)"
+
       # Only the build output travels to the publish job; nothing else is
       # shipped, and a build that produced no dist/ fails here.
       - name: Upload dist/ artifact for the publish job
